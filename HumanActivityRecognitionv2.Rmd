@@ -1,0 +1,156 @@
+---
+title: "Learning Machine, Human Activity Recognition"
+author: "Fernando López"
+date: "17 de diciembre de 2016"
+output: html_document
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+library(caret)
+library(randomForest)
+library(magrittr)
+library(dplyr)
+```
+##Introduction
+
+The human activity recognition research has traditionally focused on discriminating between different activities, i.e. to predict "which" activity was performed at a specific point in time. The donors of the "Weight Lifting Exercises" dataset investigated "how (well)" an activity was performed by the wearer.
+
+In their work they first define quality of execution and investigate three aspects that pertain to qualitative activity recognition: the problem of specifying correct execution, the automatic and robust detection of execution mistakes, and how to provide feedback on the quality of execution to the user.
+
+Six young healthy participants were asked to perform one set of 10 repetitions of the Unilateral Dumbbell Biceps Curl in five different fashions: exactly according to the specification (Class A), throwing the elbows to the front (Class B), lifting the dumbbell only halfway (Class C), lowering the dumbbell only halfway (Class D) and throwing the hips to the front (Class E).
+
+Class A corresponds to the specified execution of the exercise, while the other 4 classes correspond to common mistakes. Participants were supervised by an experienced weight lifter to make sure the execution complied to the manner they were supposed to simulate. The exercises were performed by six male participants aged between 20-28 years, with little weight lifting experience. We made sure that all participants could easily simulate the mistakes in a safe and controlled manner by using a relatively light dumbbell (1.25kg).
+
+The present project is an exercise to find a model which is able to predict when a movement is a good execution of an Unilateral Dumbbell Biceps Curl.
+
+##Getting data
+
+```{r datasets}
+rm(list = ls())
+dir <- "C:/Users/Fernando/Documents/Especialización/Data Science/Machine Learning/Assigment/pml-testing.csv"
+testing <- read.csv2(dir,header=TRUE,sep=',', stringsAsFactors = FALSE)
+dir <- "C:/Users/Fernando/Documents/Especialización/Data Science/Machine Learning/Assigment/pml-training.csv"
+training <- read.csv2(dir,header=TRUE,sep=',', stringsAsFactors = FALSE)
+```
+
+##Exploring and cleaning data
+
+```{r transform to numeric, warning=FALSE}
+#str(training)
+#vapply(training, class, character(1))
+#Convert class char to numeric
+cols_to_change <- c(8:159)
+training[cols_to_change] = data.matrix(training[cols_to_change])
+testing[cols_to_change] = data.matrix(testing[cols_to_change])
+```
+
+There are too many variables: 160. I need to reduce them in order to find a good balance between need and computation time. I will throw away the near zero variables, because they are uninformative.
+
+```{r remove near zero variables}
+nzv <- nearZeroVar(training[,8:159],saveMetrics = FALSE)
+training <- training[,-nzv]
+```
+
+There are too many variables with a high missing values percentaje. I suppose they are variables without movement almost all the time, also uninformative . So I will drop away them. If I would found good accuracy in the final model, it will be OK. If not, I will have to add this variables again.
+
+```{r delete variables with NA}
+na_count <-sapply(training, function(y) sum(length(which(is.na(y)))))
+na_count <- as.data.frame(na_count)
+training <- training[,c(na_count[[1]]==0)]
+```
+
+In order to understand the remainder variables, I consulted Internet:
+
+"They are three sensors that are useful for determining position and orientation, but they measure different things.
+
+A magnetometer measures magnetic fields. Because the earth has a significant magnetic field, the magnetometer can be used as a compass. As such it is useful to determine absolute orientation in the NESW plane.
+
+An accelerometer measures accelerations. This is useful to measure changes in velocity (directly, as the acceleration is the first time derivative of the velocity) and changes in position (by integrating the signal). They are usually used for measuring small movements. Also note that gravity acts like a continuous acceleration upward (via Einstein's equivalency principle), so a multiple-axis accelerometer can also be used as an absolute orientation sensor in the UP-DOWN plane.
+A gyroscope measures either changes in orientation (regular gyro or integrating rate gyro) or changes in rotational velocity (rate gyro).
+
+The reason these sensors are combined is because they excel at different things. For example, for orientation, a magnetometer has poor accuracy for fast movement, but pretty much zero drift over time. An integrating scheme using gyros on the other hand reacts quickly and accurately to changes, but accumulates vast error over time. It also requires to start from a known orientation, as it only reacts to changes." From http://electronics.stackexchange.com/questions/36589/what-are-the-differences-between-a-gyroscope-accelerometer-and-magnetometer
+
+So I will delete all variables related with magnetometer, because we are identifying movements in short period of time.
+
+```{r delete magnet}
+training <- training %>% select(-starts_with("magnet_"))
+# Delete totals too
+training <- training %>% select(-starts_with("total_"))
+```
+
+Finally, new window indicates change of activity, or end of performance of one activity, so I will keep only all data tagged with new_window = 'no'.
+
+```{r delete_rows_with_new_window_tags_yes}
+training <- training[training[,6]=='no',]
+```
+
+Now, I am ready to model.
+
+## Subsetting
+
+I create subtraining and subtesting datasets:
+
+```{r cross validating sets}
+#Do not include identification variables
+training <- training[,7:36]
+inTrain <- createDataPartition(y = training$classe, p = 0.7, list = FALSE)
+subtraining <- training[inTrain,]
+subtesting <- training[-inTrain,]
+# Clean memory to have enought space
+rm(nzv,dir,training,na_count,inTrain)
+
+##Some statistics
+#summary <- as.data.frame(summary(subtraining))
+#summary <- summary[,2:3]
+#summarys <- separate(summary,Freq,c('stat','value'),sep=":",convert=TRUE)
+#summarys <- summarys[1:186,]
+#summary3 <- spread(summarys,stat,value)
+
+```
+
+## Model
+
+All the data is related with elbows, dumbbell and hips, so I cannot eliminate more variables a priori. There are five classes for classification, so I will use some model based on trees, because are good models for mutiple classifications, and the model will select the best variables for prediction.
+
+Random Forest is a good model, although my PC is short of memory. So I will use random forest with parameters that let my PC train the model.
+
+I will use cross validation with the inbuilt training control 'repeated cross validation' parameter, with ten folds and five repeats.
+
+```{r modelFit}
+start.time <- Sys.time()
+set.seed(1050)
+fitControl <- trainControl(method = "repeatedcv", number = 10, repeats = 5)
+modelFit <- train(classe~., method = 'rf', data=subtraining, trControl = fitControl, proximity = FALSE, importance = TRUE, nodesize=50, ntree=100)
+end.time <- Sys.time()
+time.taken <- end.time - start.time
+time.taken
+modelFit
+```
+
+## Expected out of sample error
+
+```{r predict on subtesting}
+pred <- predict(modelFit,subtesting)
+t <- confusionMatrix(pred,subtesting$classe)
+t
+plot(modelFit, log = "y", lwd = 2, main = "Model accuracy", xlab = "Number of predictors", ylab = "Accuracy")
+```
+
+
+```{r print out of sample error, echo = FALSE}
+print(paste('The expected out of sample error is 1 - accuracy: ',1 - t$overall[1]),sep='',digits=2)
+```
+
+## Predicting
+
+I have twenty observations that I can predicti with the model
+
+```{r predict testing}
+# Transform variables to numeric
+testing[cols_to_change] = data.matrix(testing[cols_to_change])
+pred_testing <- predict(modelFit, testing)
+pred_testing
+```
+
+END
